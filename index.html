@@ -1058,13 +1058,22 @@
       const surahNum = SUWAR[state.ayahSurahIdx].id;
       showToast('جاري تحميل آيات السورة...');
       try {
-        // نجيب نص الآية (quran-uthmani) وصوت القارئ المختار معاً في نفس الطلب، فنقدر نعرض الآية كتابةً بجانب صوتها
-        const res = await fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/editions/quran-uthmani,${reciterId}`);
-        const data = await res.json();
-        const textEdition = data.data.find(d => d.edition.identifier === 'quran-uthmani');
-        const audioEdition = data.data.find(d => d.edition.identifier === reciterId);
-        const merged = audioEdition.ayahs.map((a, i) => ({ ...a, text: textEdition.ayahs[i] ? textEdition.ayahs[i].text : '' }));
-        state.ayahData = { ...audioEdition, ayahs: merged };
+        // طلبان بسيطان منفصلان (صوت القارئ + النص العثماني) بدل نقطة النهاية المجمّعة،
+        // لأنها أثبت وموثقة رسمياً لكل حالة بمفردها
+        const [audioRes, textRes] = await Promise.all([
+          fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/${reciterId}`),
+          fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/quran-uthmani`)
+        ]);
+        if (!audioRes.ok || !textRes.ok) throw new Error('bad response');
+        const audioJson = await audioRes.json();
+        const textJson = await textRes.json();
+        const audioAyahs = audioJson.data.ayahs;
+        const textAyahs = textJson.data.ayahs;
+        const merged = audioAyahs.map((a, i) => ({
+          ...a,
+          text: (textAyahs[i] && textAyahs[i].text) ? textAyahs[i].text : (a.text || '')
+        }));
+        state.ayahData = { ...audioJson.data, ayahs: merged };
         state.ayahIdx = 0;
         updateAyahUI();
       } catch (e) { showToast('تعذر تحميل الآيات، تحقق من الاتصال'); }
