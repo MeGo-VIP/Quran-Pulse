@@ -1098,31 +1098,45 @@
 
     // نبني قائمة واحدة موحّدة لوضع "آية بآية": القراء اللي عندهم توقيت دقيق (من نفس الـ١٩٠+ قارئ
     // الأساسيين) أولاً، وبعدهم قراء alquran.cloud الإضافيين اللي مش موجودين في المجموعة الأولى
+    // كل خطوة هنا معزولة بـ try/catch مستقل: خلل في مصدر واحد (مثلاً مطابقة قراء التوقيت الدقيق)
+    // ما يمنعش ظهور باقي القراء من المصدر التاني
     function buildAyahCombinedList() {
       const combined = [];
-      const normServers = new Set();
-      state.timingReads.forEach(tr => {
-        const folder = (tr.folder_url || '').replace(/\/+$/, '');
-        const match = state.reciters.find(r => !r.moshaf[0].isLiveRadio && r.moshaf.some(m => (m.server || '').replace(/\/+$/, '') === folder));
-        if (match) {
-          combined.push({ uid: 'tm_' + tr.id, name: match.name, source: 'timing', readId: tr.id, server: folder });
-          normServers.add(folder);
-        }
-      });
-      state.ayahReciters.forEach(r => {
-        combined.push({
-          uid: 'ar_' + r.identifier, source: 'alcloud', identifier: r.identifier,
-          name: r.language === 'ar' ? r.name : `${r.englishName} (${r.language})`
+      try {
+        (state.timingReads || []).forEach(tr => {
+          try {
+            const folder = (tr.folder_url || '').replace(/\/+$/, '');
+            if (!folder) return;
+            const match = (state.reciters || []).find(r =>
+              r && Array.isArray(r.moshaf) && r.moshaf.length > 0 && !r.moshaf[0].isLiveRadio &&
+              r.moshaf.some(m => (m && m.server || '').replace(/\/+$/, '') === folder)
+            );
+            if (match) combined.push({ uid: 'tm_' + tr.id, name: match.name, source: 'timing', readId: tr.id, server: folder });
+          } catch (innerErr) { /* قارئ واحد اتعدّى، كمّل الباقي */ }
         });
-      });
+      } catch (e) {}
+      try {
+        (state.ayahReciters || []).forEach(r => {
+          combined.push({
+            uid: 'ar_' + r.identifier, source: 'alcloud', identifier: r.identifier,
+            name: r.language === 'ar' ? r.name : `${r.englishName} (${r.language})`
+          });
+        });
+      } catch (e) {}
       state.ayahCombined = combined;
-      renderAyahReciterSelect();
+      try { renderAyahReciterSelect(); } catch (e) {}
     }
 
     function renderAyahReciterSelect() {
       const sel = $('ayah-reciter-select');
       const prevVal = sel.value;
       sel.innerHTML = '';
+      if (state.ayahCombined.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = ''; opt.innerText = 'جاري تحميل القراء...';
+        sel.appendChild(opt);
+        return;
+      }
       state.ayahCombined.forEach(item => {
         const opt = document.createElement('option');
         opt.value = item.uid;
@@ -1144,8 +1158,17 @@
 
     async function loadAyahSurah() {
       const uid = $('ayah-reciter-select').value;
+      if (!uid) {
+        $('ayah-text-content').innerText = state.ayahCombined.length === 0
+          ? 'جاري تحميل قائمة القراء... لو استمر الانتظار، تأكد من اتصال الإنترنت وجرّب تبديل وضع آية بآية مرة أخرى'
+          : 'اختر قارئاً أولاً من القائمة فوق';
+        return;
+      }
       const item = state.ayahCombined.find(x => x.uid === uid);
-      if (!item) return;
+      if (!item) {
+        $('ayah-text-content').innerText = 'تعذّر إيجاد بيانات هذا القارئ، جرّب اختيار قارئ آخر';
+        return;
+      }
       const surahNum = SUWAR[state.ayahSurahIdx].id;
       showToast('جاري تحميل آيات السورة...');
       try {
@@ -1433,6 +1456,15 @@
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', () => { navigator.serviceWorker.register('sw.js').catch(() => {}); });
     }
+
+    // أي خطأ غير متوقع في أي مكان بالتطبيق يظهر كرسالة بدل ما يختفي بصمت — عشان يبقى قابل للتشخيص
+    window.addEventListener('error', (e) => {
+      try { showToast('خطأ غير متوقع: ' + (e.message || 'غير معروف')); } catch (err) {}
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      const msg = (e.reason && e.reason.message) ? e.reason.message : String(e.reason || 'غير معروف');
+      try { showToast('خطأ غير متوقع: ' + msg); } catch (err) {}
+    });
 
     window.onload = () => {
       loadSettings();
