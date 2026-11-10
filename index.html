@@ -16,6 +16,13 @@
   <link rel="manifest" href="manifest.json">
   <link rel="icon" href="icons/icon-192.png">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <!-- تسريع أول اتصال بمصادر البيانات (DNS + TLS مسبقًا) -->
+  <link rel="preconnect" href="https://www.mp3quran.net">
+  <link rel="preconnect" href="https://mp3quran.net">
+  <link rel="preconnect" href="https://api.alquran.cloud">
+  <link rel="preconnect" href="https://api.aladhan.com">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700&family=Amiri:wght@400;700&family=Great+Vibes&display=swap" rel="stylesheet">
   <style>
     :root {
@@ -573,6 +580,7 @@
       // وضع الاستماع: 'surah' سورة كاملة أو 'ayah' آية بآية
       mode: 'surah',
       ayahReciters: [], ayahSurahIdx: 0, ayahIdx: 0, ayahData: null,
+      timingReads: [], ayahCombined: [], quranText: null,
       settings: { autoLocation: true, manualCity: '', notifyPrayer: false, autoNextSurah: true }
     };
 
@@ -604,7 +612,52 @@
       return reciter.moshaf.length > 0;
     }
 
+    function buildRecitersFromApi(arData, engData, radData) {
+      const map = new Map();
+      const allRawReciters = [...arData.reciters, ...engData.reciters];
+      for (let r of allRawReciters) {
+        if (validateReciter(r)) {
+          const norm = normalizeName(r.name);
+          if (!map.has(norm)) {
+            r.uid = 'r_' + r.id;
+            map.set(norm, r);
+          } else {
+            const existing = map.get(norm);
+            r.moshaf.forEach(m => {
+              if (!existing.moshaf.some(em => em.id === m.id)) existing.moshaf.push(m);
+            });
+          }
+        }
+      }
+      const reciters = Array.from(map.values());
+      // كل الإذاعات المباشرة من mp3quran.net (مش إذاعة القاهرة بس) تُضاف كمصادر استماع إضافية
+      const radios = (radData.radios || []).filter(rad => rad.url);
+      if (radios.length) {
+        radios.forEach(rad => {
+          reciters.push({
+            uid: 'rad_' + rad.id, name: rad.name,
+            moshaf: [{ name: 'بث مباشر', server: rad.url, surah_list: '', isLiveRadio: true }]
+          });
+        });
+      } else {
+        reciters.push({
+          uid: 'rad_cairo_manual', name: 'إذاعة القرآن الكريم من القاهرة',
+          moshaf: [{ name: 'بث مباشر', server: 'https://n01.radiojar.com/8s9u67z878uvv?rj-ttl=5&rj-tok=AAABfX3l9_4A7A7A7A7A7A7A', surah_list: '', isLiveRadio: true }]
+        });
+      }
+      return reciters;
+    }
+
     async function loadData() {
+      // عرض فوري من نسخة مخزّنة محليًا (إن وُجدت) لسرعة بدء تشغيل أعلى، وتحديثها في الخلفية بعدين
+      try {
+        const cached = JSON.parse(localStorage.getItem('noor_reciters_cache_v1') || 'null');
+        if (cached && Array.isArray(cached.reciters) && cached.reciters.length) {
+          state.reciters = cached.reciters;
+          renderReciters(); restoreSelection(); updateUI();
+        }
+      } catch (e) {}
+
       try {
         const [arRes, engRes, radRes] = await Promise.all([
           fetch('https://www.mp3quran.net/api/v3/reciters?language=ar'),
@@ -614,45 +667,12 @@
         const arData = await arRes.json();
         const engData = await engRes.json();
         const radData = await radRes.json();
-
-        const map = new Map();
-        const allRawReciters = [...arData.reciters, ...engData.reciters];
-
-        for (let r of allRawReciters) {
-          if (validateReciter(r)) {
-            const norm = normalizeName(r.name);
-            if (!map.has(norm)) {
-              r.uid = 'r_' + r.id;
-              map.set(norm, r);
-            } else {
-              const existing = map.get(norm);
-              r.moshaf.forEach(m => {
-                if (!existing.moshaf.some(em => em.id === m.id)) existing.moshaf.push(m);
-              });
-            }
-          }
-        }
-
-        state.reciters = Array.from(map.values());
-
-        // كل الإذاعات المباشرة من mp3quran.net (مش إذاعة القاهرة بس) تُضاف كمصادر استماع إضافية
-        const radios = (radData.radios || []).filter(rad => rad.url);
-        if (radios.length) {
-          radios.forEach(rad => {
-            state.reciters.push({
-              uid: 'rad_' + rad.id, name: rad.name,
-              moshaf: [{ name: 'بث مباشر', server: rad.url, surah_list: '', isLiveRadio: true }]
-            });
-          });
-        } else {
-          state.reciters.push({
-            uid: 'rad_cairo_manual', name: 'إذاعة القرآن الكريم من القاهرة',
-            moshaf: [{ name: 'بث مباشر', server: 'https://n01.radiojar.com/8s9u67z878uvv?rj-ttl=5&rj-tok=AAABfX3l9_4A7A7A7A7A7A7A', surah_list: '', isLiveRadio: true }]
-          });
-        }
-
+        state.reciters = buildRecitersFromApi(arData, engData, radData);
+        try { localStorage.setItem('noor_reciters_cache_v1', JSON.stringify({ reciters: state.reciters, ts: Date.now() })); } catch (e) {}
         renderReciters(); restoreSelection(); updateUI();
-      } catch (e) { showToast('خطأ في تحميل البيانات'); }
+      } catch (e) {
+        if (!state.reciters.length) showToast('خطأ في تحميل البيانات، تحقق من الاتصال');
+      }
     }
 
     function renderReciters() {
@@ -1020,26 +1040,96 @@
     }
 
     /* ══════════ وضع "آية بآية" (alquran.cloud — تلاوات مفصولة لكل آية) ══════════ */
+    // النص الكامل للقرآن (مرة واحدة فقط، ومخزّن محليًا) — مصدر وحيد وموثوق لعرض نص الآية
+    // بدل الاعتماد على طلب شبكة منفصل مع كل سورة، فأي خطأ شبكة مستقبلي ما يأثرش على النص
+    async function ensureQuranText() {
+      if (state.quranText) return state.quranText;
+      try {
+        const cached = localStorage.getItem('noor_quran_text_v1');
+        if (cached) { state.quranText = JSON.parse(cached); return state.quranText; }
+      } catch (e) {}
+      const res = await fetch('https://api.alquran.cloud/v1/quran/quran-uthmani');
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      const bySurah = {};
+      json.data.surahs.forEach(s => { bySurah[s.number] = s.ayahs.map(a => a.text); });
+      state.quranText = bySurah;
+      try { localStorage.setItem('noor_quran_text_v1', JSON.stringify(bySurah)); } catch (e) {}
+      return bySurah;
+    }
+
+    // قراء alquran.cloud (ملف صوتي منفصل لكل آية) — بنعرض نسخة مخزّنة فورًا لو موجودة، ونحدّثها بالخلفية
     async function loadAyahReciters() {
+      try {
+        const cached = JSON.parse(localStorage.getItem('noor_ayah_reciters_cache_v1') || 'null');
+        if (cached && Array.isArray(cached.list) && cached.list.length) {
+          state.ayahReciters = cached.list;
+          buildAyahCombinedList();
+        }
+      } catch (e) {}
       try {
         const res = await fetch('https://api.alquran.cloud/v1/edition?format=audio');
         const data = await res.json();
         const list = (data.data || []).slice();
         list.sort((a, b) => (a.language === 'ar' ? 0 : 1) - (b.language === 'ar' ? 0 : 1) || a.englishName.localeCompare(b.englishName));
         state.ayahReciters = list;
-        renderAyahReciterSelect();
-      } catch (e) { showToast('تعذر تحميل قائمة القراء'); }
+        try { localStorage.setItem('noor_ayah_reciters_cache_v1', JSON.stringify({ list })); } catch (e) {}
+      } catch (e) { if (!state.ayahReciters.length) showToast('تعذر تحميل بعض قراء وضع آية بآية'); }
+      buildAyahCombinedList();
+    }
+
+    // قراء mp3quran.net اللي عندهم توقيت دقيق لكل آية (نفس ملف السورة الكاملة، بتقسيم بالمللي ثانية)
+    async function loadTimingReads() {
+      try {
+        const cached = JSON.parse(localStorage.getItem('noor_timing_reads_cache_v1') || 'null');
+        if (cached && Array.isArray(cached.list) && cached.list.length) {
+          state.timingReads = cached.list;
+          buildAyahCombinedList();
+        }
+      } catch (e) {}
+      try {
+        const res = await fetch('https://mp3quran.net/api/v3/ayat_timing/reads');
+        const list = await res.json();
+        state.timingReads = list;
+        try { localStorage.setItem('noor_timing_reads_cache_v1', JSON.stringify({ list })); } catch (e) {}
+      } catch (e) {}
+      buildAyahCombinedList();
+    }
+
+    // نبني قائمة واحدة موحّدة لوضع "آية بآية": القراء اللي عندهم توقيت دقيق (من نفس الـ١٩٠+ قارئ
+    // الأساسيين) أولاً، وبعدهم قراء alquran.cloud الإضافيين اللي مش موجودين في المجموعة الأولى
+    function buildAyahCombinedList() {
+      const combined = [];
+      const normServers = new Set();
+      state.timingReads.forEach(tr => {
+        const folder = (tr.folder_url || '').replace(/\/+$/, '');
+        const match = state.reciters.find(r => !r.moshaf[0].isLiveRadio && r.moshaf.some(m => (m.server || '').replace(/\/+$/, '') === folder));
+        if (match) {
+          combined.push({ uid: 'tm_' + tr.id, name: match.name, source: 'timing', readId: tr.id, server: folder });
+          normServers.add(folder);
+        }
+      });
+      state.ayahReciters.forEach(r => {
+        combined.push({
+          uid: 'ar_' + r.identifier, source: 'alcloud', identifier: r.identifier,
+          name: r.language === 'ar' ? r.name : `${r.englishName} (${r.language})`
+        });
+      });
+      state.ayahCombined = combined;
+      renderAyahReciterSelect();
     }
 
     function renderAyahReciterSelect() {
       const sel = $('ayah-reciter-select');
+      const prevVal = sel.value;
       sel.innerHTML = '';
-      state.ayahReciters.forEach(r => {
+      state.ayahCombined.forEach(item => {
         const opt = document.createElement('option');
-        opt.value = r.identifier;
-        opt.innerText = r.language === 'ar' ? r.name : `${r.englishName} (${r.language})`;
+        opt.value = item.uid;
+        opt.innerText = item.source === 'timing' ? `${item.name} (دقيق)` : item.name;
         sel.appendChild(opt);
       });
+      if (prevVal) sel.value = prevVal;
     }
 
     function populateAyahSurahSelect() {
@@ -1053,39 +1143,49 @@
     }
 
     async function loadAyahSurah() {
-      const reciterId = $('ayah-reciter-select').value;
-      if (!reciterId) return;
+      const uid = $('ayah-reciter-select').value;
+      const item = state.ayahCombined.find(x => x.uid === uid);
+      if (!item) return;
       const surahNum = SUWAR[state.ayahSurahIdx].id;
       showToast('جاري تحميل آيات السورة...');
       try {
-        // طلبان بسيطان منفصلان (صوت القارئ + النص العثماني) بدل نقطة النهاية المجمّعة،
-        // لأنها أثبت وموثقة رسمياً لكل حالة بمفردها
-        const [audioRes, textRes] = await Promise.all([
-          fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/${reciterId}`),
-          fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/quran-uthmani`)
-        ]);
-        if (!audioRes.ok || !textRes.ok) throw new Error('bad response');
-        const audioJson = await audioRes.json();
-        const textJson = await textRes.json();
-        const audioAyahs = audioJson.data.ayahs;
-        const textAyahs = textJson.data.ayahs;
-        const merged = audioAyahs.map((a, i) => ({
-          ...a,
-          text: (textAyahs[i] && textAyahs[i].text) ? textAyahs[i].text : (a.text || '')
-        }));
-        state.ayahData = { ...audioJson.data, ayahs: merged };
+        const textBySurah = await ensureQuranText();
+        const textArr = textBySurah[surahNum] || [];
+        let ayahs;
+        if (item.source === 'timing') {
+          const audioUrl = `${item.server}/${String(surahNum).padStart(3, '0')}.mp3`;
+          const res = await fetch(`https://mp3quran.net/api/v3/ayat_timing?surah=${surahNum}&read=${item.readId}`);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const timing = await res.json();
+          ayahs = timing.filter(t => t.ayah > 0).map(t => ({
+            numberInSurah: t.ayah, audio: audioUrl,
+            startMs: t.start_time, endMs: t.end_time,
+            text: textArr[t.ayah - 1] || ''
+          }));
+        } else {
+          const res = await fetch(`https://api.alquran.cloud/v1/surah/${surahNum}/${item.identifier}`);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const json = await res.json();
+          ayahs = json.data.ayahs.map((a, i) => ({
+            numberInSurah: a.numberInSurah, audio: a.audio, startMs: null, endMs: null,
+            text: textArr[i] || a.text || ''
+          }));
+        }
+        if (!ayahs || ayahs.length === 0) throw new Error('empty');
+        state.ayahData = { source: item.source, reciterName: item.name, ayahs };
         state.ayahIdx = 0;
         updateAyahUI();
-      } catch (e) { showToast('تعذر تحميل الآيات، تحقق من الاتصال'); }
+      } catch (e) {
+        $('ayah-text-content').innerText = 'تعذّر تحميل الآيات (' + (e.message || 'خطأ غير معروف') + ') — جرّب قارئاً آخر أو أعد المحاولة';
+        showToast('تعذر تحميل الآيات، تحقق من الاتصال');
+      }
     }
 
     function updateAyahUI() {
       if (!state.ayahData) return;
       const a = state.ayahData.ayahs[state.ayahIdx];
       const total = state.ayahData.ayahs.length;
-      const sel = $('ayah-reciter-select');
-      const reciterLabel = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].innerText : '';
-      $('now-playing-title').innerText = reciterLabel;
+      $('now-playing-title').innerText = state.ayahData.reciterName || '';
       $('now-playing-surah').innerText = `سورة ${SUWAR[state.ayahSurahIdx].name} - آية ${a.numberInSurah}`;
       $('ayah-progress-text').innerText = `${a.numberInSurah} / ${total}`;
       $('ayah-text-content').innerText = a.text || '—';
@@ -1094,11 +1194,26 @@
     function playCurrentAyah() {
       const a = state.ayahData && state.ayahData.ayahs[state.ayahIdx];
       if (!a) return;
-      if (audioEl.src !== a.audio) { audioEl.src = a.audio; audioEl.load(); }
-      audioEl.play().catch(() => showToast('خطأ في تشغيل الآية'));
+      const seekAndPlay = () => {
+        if (a.startMs != null) { try { audioEl.currentTime = a.startMs / 1000; } catch (e) {} }
+        audioEl.play().catch(() => showToast('خطأ في تشغيل الآية'));
+      };
+      if (audioEl.src !== a.audio) {
+        audioEl.src = a.audio; audioEl.load();
+        audioEl.addEventListener('loadedmetadata', seekAndPlay, { once: true });
+      } else {
+        seekAndPlay();
+      }
       updateAyahUI();
       updateMediaSessionAyah();
     }
+
+    // أثناء تشغيل القراءة الدقيقة (نفس ملف السورة)، لما نوصل لنهاية الآية الحالية ننتقل للي بعدها تلقائيًا
+    audioEl.addEventListener('timeupdate', () => {
+      if (state.mode !== 'ayah' || !state.ayahData || state.ayahData.source !== 'timing') return;
+      const a = state.ayahData.ayahs[state.ayahIdx];
+      if (a && a.endMs != null && audioEl.currentTime * 1000 >= a.endMs - 60) nextAyah();
+    });
 
     async function nextAyah() {
       if (!state.ayahData) return;
@@ -1139,7 +1254,7 @@
       $('tab-ayah').classList.toggle('active', m === 'ayah');
       if (!$('drawer-overlay').classList.contains('hidden')) closeDrawer();
       if (!audioEl.paused) audioEl.pause();
-      if (m === 'ayah' && state.ayahReciters.length === 0) loadAyahReciters();
+      if (m === 'ayah' && state.ayahCombined.length === 0) { loadAyahReciters(); loadTimingReads(); }
       if (m === 'ayah') { $('now-playing-title').innerText = 'اختر قارئاً وسورة'; $('now-playing-surah').innerText = 'وضع آية بآية'; }
       else updateUI();
     }
@@ -1235,12 +1350,9 @@
       let source, countLabel;
 
       if (state.mode === 'ayah') {
-        source = state.ayahReciters.map(r => ({
-          uid: 'ar_' + r.identifier,
-          name: r.language === 'ar' ? r.name : `${r.englishName} (${r.language})`,
-          isLive: false, _ayahId: r.identifier
-        }));
-        countLabel = `${state.ayahReciters.length} قارئ متاح حالياً لوضع آية بآية`;
+        const precise = state.ayahCombined.filter(x => x.source === 'timing').length;
+        source = state.ayahCombined.map(item => ({ uid: item.uid, name: item.name, isLive: false, _item: item }));
+        countLabel = `${state.ayahCombined.length} قارئ (منهم ${precise} بتوقيت دقيق للآية)`;
       } else {
         const radios = state.reciters.filter(r => r.moshaf[0] && r.moshaf[0].isLiveRadio);
         const real = state.reciters.length - radios.length;
@@ -1266,7 +1378,7 @@
       filtered.forEach(item => {
         const div = document.createElement('div');
         div.className = 'drawer-item';
-        const sub = state.mode === 'ayah' ? 'آية بآية' : (item.isLive ? 'بث مباشر' : `${item._r.moshaf.length} رواية`);
+        const sub = state.mode === 'ayah' ? (item._item.source === 'timing' ? 'توقيت دقيق' : 'آية بآية') : (item.isLive ? 'بث مباشر' : `${item._r.moshaf.length} رواية`);
         const favBtn = (state.mode === 'ayah') ? '' :
           `<button class="drawer-item-fav" type="button">${state.favorites.reciters.includes(item.uid) ? '❤️' : '🤍'}</button>`;
         div.innerHTML = `
@@ -1286,7 +1398,7 @@
         }
         div.onclick = () => {
           if (state.mode === 'ayah') {
-            $('ayah-reciter-select').value = item._ayahId;
+            $('ayah-reciter-select').value = item._item.uid;
             state.ayahData = null;
             closeDrawer();
             showToast('تم اختيار القارئ، اختر السورة الآن');

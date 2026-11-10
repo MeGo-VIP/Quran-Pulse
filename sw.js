@@ -1,6 +1,6 @@
 // نور الإيمان - Service Worker
 // يخزّن واجهة التطبيق فقط (لتعمل بدون إنترنت)، ولا يخزّن ملفات الصوت أو نتائج الـ API أبداً.
-const CACHE_NAME = 'noor-al-iman-v1';
+const CACHE_NAME = 'noor-al-iman-v2';
 const SHELL_FILES = [
   './',
   './index.html',
@@ -8,6 +8,8 @@ const SHELL_FILES = [
   './icons/icon-192.png',
   './icons/icon-512.png'
 ];
+// نص القرآن ثابت لا يتغيّر، فهو آمن للتخزين الدائم (يسرّع وضع "آية بآية" ويشغّله حتى بلا إنترنت)
+const CACHEABLE_STATIC_DATA = ['https://api.alquran.cloud/v1/quran/quran-uthmani'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
@@ -29,6 +31,24 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = event.request.url;
+
+  // نص القرآن الكامل: ثابت أبدًا، فنخزّنه Cache-first لسرعة فورية وعمل بلا إنترنت
+  if (CACHEABLE_STATIC_DATA.includes(url)) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((response) => {
+          if (response && response.ok) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return response;
+        });
+      })
+    );
+    return;
+  }
+
   const isRemoteData =
     url.includes('mp3quran.net') ||
     url.includes('everyayah.com') ||
@@ -38,7 +58,7 @@ self.addEventListener('fetch', (event) => {
     url.includes('fonts.googleapis.com') ||
     url.includes('fonts.gstatic.com');
 
-  // لا نتدخل إطلاقاً في بث الصوت أو طلبات الـ API أو الخطوط الخارجية
+  // لا نتدخل إطلاقاً في بث الصوت أو باقي طلبات الـ API أو الخطوط الخارجية
   if (isRemoteData || event.request.destination === 'audio') return;
 
   event.respondWith(
