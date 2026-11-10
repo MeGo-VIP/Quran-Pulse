@@ -362,14 +362,24 @@
       font-size: 0.72rem; font-weight: 700; cursor: pointer; white-space: nowrap;
     }
 
-    /* ══ نص الآية (وضع آية بآية) ══ */
+    /* ══ نص الآية بشكل "شاشة عرض" (الآية الحالية منوّرة، والسابقة/التالية باهتة) ══ */
     #ayah-text-box {
-      margin: 6px 10px 0; padding: 12px 14px; background: var(--search-bg);
-      border: 1px solid var(--gold-light); border-radius: 10px;
+      margin: 6px 10px 0; padding: 14px 16px; background: var(--search-bg);
+      border: 1px solid var(--gold-light); border-radius: 12px;
+      display: flex; flex-direction: column; gap: 8px; overflow: hidden;
     }
-    #ayah-text-content {
-      font-family: 'Amiri', serif; font-size: 1.15rem; line-height: 2;
-      text-align: center; color: var(--text-dark); margin: 0;
+    .ayah-line {
+      font-family: 'Amiri', serif; text-align: center; margin: 0;
+      line-height: 1.9; word-break: break-word;
+    }
+    .ayah-line-dim {
+      font-size: 0.92rem; color: var(--text-dark); opacity: 0.35;
+      min-height: 1.4em;
+    }
+    .ayah-line-active {
+      font-size: 1.3rem; font-weight: 700; color: var(--text-dark);
+      background: linear-gradient(90deg, transparent, rgba(212,175,55,0.2), transparent);
+      border-radius: 8px; padding: 5px 6px;
     }
 
     /* ══ القائمة الجانبية الاحترافية للقراء ══ */
@@ -494,7 +504,11 @@
       </div>
     </div>
 
-    <div id="ayah-text-box" class="hidden"><p id="ayah-text-content">—</p></div>
+    <div id="ayah-text-box" class="hidden">
+      <p id="ayah-line-prev" class="ayah-line ayah-line-dim"></p>
+      <p id="ayah-line-current" class="ayah-line ayah-line-active">—</p>
+      <p id="ayah-line-next" class="ayah-line ayah-line-dim"></p>
+    </div>
 
     <div id="seeker-container">
       <div id="seeker-fill"></div>
@@ -1158,15 +1172,16 @@
 
     async function loadAyahSurah() {
       const uid = $('ayah-reciter-select').value;
+      $('ayah-line-prev').innerText = ''; $('ayah-line-next').innerText = '';
       if (!uid) {
-        $('ayah-text-content').innerText = state.ayahCombined.length === 0
+        $('ayah-line-current').innerText = state.ayahCombined.length === 0
           ? 'جاري تحميل قائمة القراء... لو استمر الانتظار، تأكد من اتصال الإنترنت وجرّب تبديل وضع آية بآية مرة أخرى'
           : 'اختر قارئاً أولاً من القائمة فوق';
         return;
       }
       const item = state.ayahCombined.find(x => x.uid === uid);
       if (!item) {
-        $('ayah-text-content').innerText = 'تعذّر إيجاد بيانات هذا القارئ، جرّب اختيار قارئ آخر';
+        $('ayah-line-current').innerText = 'تعذّر إيجاد بيانات هذا القارئ، جرّب اختيار قارئ آخر';
         return;
       }
       const surahNum = SUWAR[state.ayahSurahIdx].id;
@@ -1199,19 +1214,26 @@
         state.ayahIdx = 0;
         updateAyahUI();
       } catch (e) {
-        $('ayah-text-content').innerText = 'تعذّر تحميل الآيات (' + (e.message || 'خطأ غير معروف') + ') — جرّب قارئاً آخر أو أعد المحاولة';
+        $('ayah-line-current').innerText = 'تعذّر تحميل الآيات (' + (e.message || 'خطأ غير معروف') + ') — جرّب قارئاً آخر أو أعد المحاولة';
         showToast('تعذر تحميل الآيات، تحقق من الاتصال');
       }
     }
 
     function updateAyahUI() {
       if (!state.ayahData) return;
-      const a = state.ayahData.ayahs[state.ayahIdx];
-      const total = state.ayahData.ayahs.length;
+      const ayahs = state.ayahData.ayahs;
+      const a = ayahs[state.ayahIdx];
+      const total = ayahs.length;
       $('now-playing-title').innerText = state.ayahData.reciterName || '';
       $('now-playing-surah').innerText = `سورة ${SUWAR[state.ayahSurahIdx].name} - آية ${a.numberInSurah}`;
       $('ayah-progress-text').innerText = `${a.numberInSurah} / ${total}`;
-      $('ayah-text-content').innerText = a.text || '—';
+
+      // شاشة عرض بثلاثة أسطر: السابقة باهتة، الحالية منوّرة، التالية باهتة — زي الفيديوهات
+      const prev = ayahs[state.ayahIdx - 1];
+      const next = ayahs[state.ayahIdx + 1];
+      $('ayah-line-prev').innerText = prev ? prev.text : '';
+      $('ayah-line-current').innerText = a.text || '—';
+      $('ayah-line-next').innerText = next ? next.text : '';
     }
 
     function playCurrentAyah() {
